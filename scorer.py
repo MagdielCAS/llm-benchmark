@@ -31,7 +31,8 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 
 import ollama_client as ollama
 import progress as prog
-from config import ALL_PROMPTS, ANONYMOUS_SCORING_SYSTEM, NAMED_SCORING_SYSTEM
+import validator as vld
+from config import ALL_PROMPTS, ANONYMOUS_SCORING_SYSTEM, NAMED_SCORING_SYSTEM, FORMAT_CHECKED_PROMPT_IDS
 
 console = Console()
 
@@ -155,3 +156,52 @@ def run_scoring(models: list[str]) -> None:
             done_ops += 1
 
     console.print(f"\n[bold green]✓ Scoring complete.[/bold green] ({done_ops}/{total_ops} operations)\n")
+
+    # ── Phase 2b: Mechanical format validation ──
+    _run_mechanical_validation(models)
+
+
+def _run_mechanical_validation(models: list[str]) -> None:
+    """Run deterministic format validators for structured/extraction prompts.
+
+    For each model × format-checked prompt, a ``mode='mechanical'`` score file
+    is written containing the 0–10 compliance score and per-field pass/fail details.
+    These are completely independent of LLM-based scoring and serve as objective
+    ground truth for the Format Compliance section of the report.
+    """
+    fmt_prompts = [pid for pid in ALL_PROMPTS if pid in FORMAT_CHECKED_PROMPT_IDS]
+    if not fmt_prompts:
+        return
+
+    console.print("[bold cyan]━━━ Phase 2b: Mechanical Format Validation ━━━[/bold cyan]\n")
+
+    for model in models:
+        for prompt_id in fmt_prompts:
+            if prog.is_score_done(model, prompt_id, "mechanical"):
+                console.print(f"  [dim]↩ Skipping mechanical {prompt_id} × {model} (already done)[/dim]")
+                continue
+
+            answer = prog.load_answer(model, prompt_id)
+            if not answer:
+                continue
+
+            result = vld.validate(prompt_id, answer)
+            if result is None:
+                continue
+
+            prog.save_score(
+                scoring_model=model,
+                prompt_id=prompt_id,
+                mode="mechanical",
+                scores={model: result.score},
+                rationale={model: " | ".join(result.details)},
+            )
+            status = "[green]✓[/green]" if result.valid else "[red]✗[/red]"
+            console.print(
+                f"  {status} {model} / {prompt_id} "
+                f"— mechanical score: [bold]{result.score}/10[/bold]  "
+                f"({'valid' if result.valid else 'invalid'})"
+            )
+
+    console.print("[bold green]✓ Mechanical validation complete.[/bold green]\n")
+

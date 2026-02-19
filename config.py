@@ -323,6 +323,176 @@ CATEGORIES: List[Category] = [
         ],
     ),
     Category(
+        id="structured_output",
+        name="🗂️ Structured Output",
+        prompts=[
+            Prompt(
+                id="struct_1",
+                category="structured_output",
+                label="JSON schema compliance",
+                system=(
+                    "You output ONLY raw valid JSON — no markdown fences, no commentary, no trailing text. "
+                    "Your response must be parseable by Python's json.loads() with zero modification."
+                ),
+                user=(
+                    "Produce a JSON object representing a software project.  "
+                    "It MUST conform to this exact schema (no extra or missing keys):\n\n"
+                    "{\n"
+                    '  "name": string,\n'
+                    '  "version": string (semver format, e.g. \"1.2.3\"),\n'
+                    '  "status": one of [\"active\", \"archived\", \"experimental\"],\n'
+                    '  "tags": array of 3 strings,\n'
+                    '  "metadata": {\n'
+                    '    "created_at": ISO-8601 date string,\n'
+                    '    "stars": integer,\n'
+                    '    "license": string\n'
+                    "  }\n"
+                    "}\n\n"
+                    "The project is a fictional open-source data pipeline tool called Streamflow."
+                ),
+            ),
+            Prompt(
+                id="struct_2",
+                category="structured_output",
+                label="YAML frontmatter markdown",
+                system=(
+                    "You output ONLY a valid markdown document with YAML frontmatter. "
+                    "Start immediately with '---', include all required fields, then the '---' closing delimiter, "
+                    "then one paragraph of markdown body. No explanation, no preamble."
+                ),
+                user=(
+                    "Write a markdown article with YAML frontmatter.  "
+                    "The frontmatter MUST contain these exact keys:\n"
+                    "- title: string\n"
+                    "- date: ISO-8601 date (2024 or 2025)\n"
+                    "- author: string\n"
+                    "- tags: list of exactly 3 strings\n"
+                    "- draft: boolean\n"
+                    "- reading_time_min: integer\n\n"
+                    "Topic: The tradeoffs between local and cloud LLM inference."
+                ),
+            ),
+            Prompt(
+                id="struct_3",
+                category="structured_output",
+                label="Function call JSON",
+                system=(
+                    "You are a function-calling AI. Output ONLY a single JSON object representing "
+                    "a function call. No markdown, no explanation."
+                ),
+                user=(
+                    "The user said: 'Book a flight from Berlin to Lisbon on March 15th 2025 "
+                    "for 2 adults and 1 child, economy class, with window seats if possible.'\n\n"
+                    "Output a JSON function call object with this schema:\n"
+                    "{\n"
+                    '  "function": "book_flight",\n'
+                    '  "parameters": {\n'
+                    '    "origin": string (IATA code),\n'
+                    '    "destination": string (IATA code),\n'
+                    '    "departure_date": string (YYYY-MM-DD),\n'
+                    '    "passengers": { "adults": int, "children": int },\n'
+                    '    "cabin_class": one of ["economy","business","first"],\n'
+                    '    "seat_preference": one of ["window","aisle","middle","none"]\n'
+                    "  }\n"
+                    "}"
+                ),
+            ),
+        ],
+    ),
+    Category(
+        id="data_extraction",
+        name="🔬 Data Extraction",
+        prompts=[
+            Prompt(
+                id="extract_1",
+                category="data_extraction",
+                label="Noisy text → categorised JSON",
+                system=(
+                    "You are a data extraction engine. Output ONLY raw valid JSON — no fences, "
+                    "no commentary. Use the exact enum values specified."
+                ),
+                user=(
+                    "Extract structured data from the following noisy customer support ticket and "
+                    "output a JSON object with EXACTLY these fields and enum values:\n\n"
+                    "SCHEMA:\n"
+                    "{\n"
+                    '  "ticket_id": string (extract from text or generate \"UNKNOWN\"),\n'
+                    '  "priority": one of ["LOW", "MEDIUM", "HIGH", "CRITICAL"],\n'
+                    '  "category": one of ["BILLING", "TECHNICAL", "ACCOUNT", "SHIPPING", "OTHER"],\n'
+                    '  "sentiment": one of ["POSITIVE", "NEUTRAL", "NEGATIVE", "ANGRY"],\n'
+                    '  "summary": string (max 20 words),\n'
+                    '  "requires_human": boolean,\n'
+                    '  "mentioned_products": array of strings\n'
+                    "}\n\n"
+                    "TICKET:\n"
+                    "Ticket #TK-48291 | 2024-11-03\n"
+                    "From: j.morrison@email.com\n"
+                    "Subject: URGENT!!! cant login and was charged TWICE this month!!!\n\n"
+                    "hi i tried loggin in 3 times today and keep getting error 403. also i just "
+                    "checked my credit card and you guys charged me $29.99 on oct 1st AND again "
+                    "on oct 31st which is NOT okay. i have the pro plan which is monthly so why "
+                    "am i paying twice?? i need this fixed asap i use this for work. "
+                    "ive been a customer since 2021 and never had issues until now. please help "
+                    "- Jeff. p.s. the mobile app also keeps crashing on my iphone 15."
+                ),
+            ),
+            Prompt(
+                id="extract_2",
+                category="data_extraction",
+                label="Corrupted JSON repair + enum normalisation",
+                system=(
+                    "You are a JSON repair and normalisation engine. "
+                    "Output ONLY raw valid JSON — no markdown fences, no explanation."
+                ),
+                user=(
+                    "The following is a corrupted, partially-formatted data record. "
+                    "Parse it, fix all errors, and output a clean JSON object with EXACTLY "
+                    "these fields and enum constraints:\n\n"
+                    "SCHEMA:\n"
+                    "{\n"
+                    '  "id": string,\n'
+                    '  "type": one of ["SENSOR", "ACTUATOR", "GATEWAY", "CONTROLLER"],\n'
+                    '  "status": one of ["ONLINE", "OFFLINE", "DEGRADED", "UNKNOWN"],\n'
+                    '  "location": { "building": string, "floor": integer, "room": string },\n'
+                    '  "last_reading": { "value": number, "unit": string, "timestamp": string (ISO-8601) },\n'
+                    '  "alerts": array of strings\n'
+                    "}\n\n"
+                    "CORRUPTED INPUT:\n"
+                    "id: 'dev-0042', tyep: SENSR, Statos: 'degradd',\n"
+                    "locashun={bilding: 'HQ West', flor: '3rd', rum: 'Server Room B'},\n"
+                    "last_redaing: {valu: 87.3 celsius unit=Celsius timetamp: '2024-11-03 14:22'},\n"
+                    "alrts: ['temp_above_threshold', overheating_warnin, 'coolng_fan_failur']"
+                ),
+            ),
+            Prompt(
+                id="extract_3",
+                category="data_extraction",
+                label="Markdown table → JSON array",
+                system=(
+                    "You are a document parsing engine. "
+                    "Output ONLY a raw JSON array — no markdown fences, no explanation."
+                ),
+                user=(
+                    "Parse the following markdown table and output a JSON array of objects. "
+                    "Each object must have these fields with enum constraints:\n"
+                    "- name: string\n"
+                    "- role: one of [\"ENGINEER\", \"DESIGNER\", \"MANAGER\", \"QA\", \"DEVOPS\"]\n"
+                    "- level: one of [\"JUNIOR\", \"MID\", \"SENIOR\", \"LEAD\", \"PRINCIPAL\"]\n"
+                    "- active: boolean (true if Status is 'Active')\n"
+                    "- team: string\n\n"
+                    "MARKDOWN TABLE:\n"
+                    "| Name | Job Title | Seniority | Status | Team |\n"
+                    "|------|-----------|-----------|--------|------|\n"
+                    "| Ana Souza | Frontend Dev | Senior Engineer | Active | Platform |\n"
+                    "| Ben Müller | UX Designer | Mid-level | On Leave | Growth |\n"
+                    "| Carla Nunes | Engineering Manager | Lead | Active | Infrastructure |\n"
+                    "| David Kim | QA Analyst | Junior | Active | Quality |\n"
+                    "| Eva Larsson | Site Reliability | Principal Engineer | Inactive | DevOps |\n"
+                ),
+            ),
+        ],
+    ),
+    Category(
         id="creative",
         name="✍️ Creative Writing",
         prompts=[
@@ -343,6 +513,21 @@ CATEGORIES: List[Category] = [
         ],
     ),
 ]
+
+# Prompt IDs that have mechanically-verifiable output formats
+STRUCTURED_PROMPT_IDS: set[str] = {"struct_1", "struct_2", "struct_3"}
+EXTRACTION_PROMPT_IDS: set[str] = {"extract_1", "extract_2", "extract_3"}
+FORMAT_CHECKED_PROMPT_IDS: set[str] = STRUCTURED_PROMPT_IDS | EXTRACTION_PROMPT_IDS
+
+# Expected format per prompt ID: 'json' | 'markdown_frontmatter' | 'json_array'
+EXPECTED_FORMAT: dict[str, str] = {
+    "struct_1": "json",
+    "struct_2": "markdown_frontmatter",
+    "struct_3": "json",
+    "extract_1": "json",
+    "extract_2": "json",
+    "extract_3": "json_array",
+}
 
 # Flat lookup by prompt ID
 ALL_PROMPTS: dict[str, Prompt] = {
