@@ -11,6 +11,16 @@ cd llm-benchmark
 uv sync
 ```
 
+### Configuration (.env)
+You can copy `.env.example` to `.env` to configure advanced features:
+```bash
+cp .env.example .env
+```
+
+**External Scorer (OpenRouter):** Change `EXTERNAL_SCORER_ENABLED` to `true` and supply your `OPENROUTER_API_KEY` to use an external LLM (like `google/gemini-2.5-pro`) as the impartial scorer instead of benchmarking local models against each other.
+
+**PDF Export:** Change `EXPORT_PDF` to `true` to automatically generate a PDF version of the benchmark report alongside the standard Markdown file.
+
 ## Usage
 
 ```bash

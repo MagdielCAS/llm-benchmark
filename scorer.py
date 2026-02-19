@@ -41,9 +41,17 @@ from rich.progress import (
 )
 
 import ollama_client as ollama
+import openrouter_client as openrouter
 import progress as prog
 import validator as vld
-from config import ALL_PROMPTS, ANONYMOUS_SCORING_SYSTEM, NAMED_SCORING_SYSTEM, FORMAT_CHECKED_PROMPT_IDS
+from config import (
+    ALL_PROMPTS,
+    ANONYMOUS_SCORING_SYSTEM,
+    NAMED_SCORING_SYSTEM,
+    FORMAT_CHECKED_PROMPT_IDS,
+    EXTERNAL_SCORER_ENABLED,
+    EXTERNAL_SCORER_MODEL,
+)
 
 console = Console()
 
@@ -215,12 +223,19 @@ def run_scoring(models: list[str]) -> None:
     """Run both anonymous and named scoring for all (scoring_model, prompt_id) pairs."""
     prompt_ids = list(ALL_PROMPTS.keys())
 
-    total_ops = len(models) * len(prompt_ids) * 2  # anon + named per model per prompt
+    # If external scoring is enabled, we only score using that single external model
+    if EXTERNAL_SCORER_ENABLED:
+        scoring_models = [EXTERNAL_SCORER_MODEL]
+        console.print("[bold cyan]━━━ Phase 2: Scoring (External OpenRouter LLM) ━━━[/bold cyan]")
+    else:
+        scoring_models = models
+        console.print("\n[bold cyan]━━━ Phase 2: Scoring ━━━[/bold cyan]")
+
+    total_ops = len(scoring_models) * len(prompt_ids) * 2  # anon + named per model per prompt
     phase_start = time.monotonic()
 
-    console.print("\n[bold cyan]━━━ Phase 2: Scoring ━━━[/bold cyan]")
     console.print(
-        f"  [dim]{len(models)} models × {len(prompt_ids)} prompts × 2 passes "
+        f"  [dim]{len(scoring_models)} models × {len(prompt_ids)} prompts × 2 passes "
         f"= [bold]{total_ops}[/bold] scoring calls[/dim]\n"
     )
 
@@ -242,8 +257,8 @@ def run_scoring(models: list[str]) -> None:
         task = progress.add_task("Scoring", total=total_ops)
 
         # Track parse outcomes per model for the success-rate report section
-        parse_ok: dict[str, dict[str, int]] = {m: {"anon": 0, "named": 0} for m in models}
-        parse_fail: dict[str, dict[str, list]] = {m: {"anon": [], "named": []} for m in models}
+        parse_ok: dict[str, dict[str, int]] = {m: {"anon": 0, "named": 0} for m in scoring_models}
+        parse_fail: dict[str, dict[str, list]] = {m: {"anon": [], "named": []} for m in scoring_models}
 
         for prompt_id in prompt_ids:
             prompt_obj = ALL_PROMPTS[prompt_id]
@@ -265,14 +280,20 @@ def run_scoring(models: list[str]) -> None:
 
             user_prompt = prompt_obj.user
 
-            for scoring_model in models:
+            for scoring_model in scoring_models:
+                # Decide which client to use based on model and settings
+                use_external = EXTERNAL_SCORER_ENABLED and scoring_model == EXTERNAL_SCORER_MODEL
+                
                 # ── Anonymous scoring ──
                 progress.update(task, description=f"[anon]  {prompt_id} / {scoring_model}")
                 if not prog.is_score_done(scoring_model, prompt_id, "anonymous"):
                     anon_body, label_map = _build_anonymous_prompt(user_prompt, answers)
                     t0 = time.monotonic()
                     try:
-                        text, _, _ = ollama.generate(scoring_model, anon_body, ANONYMOUS_SCORING_SYSTEM)
+                        if use_external:
+                            text, _, _ = openrouter.generate(scoring_model, anon_body, ANONYMOUS_SCORING_SYSTEM)
+                        else:
+                            text, _, _ = ollama.generate(scoring_model, anon_body, ANONYMOUS_SCORING_SYSTEM)
                         elapsed = time.monotonic() - t0
                         parsed = _extract_scores(text)
                         if parsed:
@@ -307,7 +328,10 @@ def run_scoring(models: list[str]) -> None:
                     named_body = _build_named_prompt(user_prompt, answers)
                     t0 = time.monotonic()
                     try:
-                        text, _, _ = ollama.generate(scoring_model, named_body, NAMED_SCORING_SYSTEM)
+                        if use_external:
+                            text, _, _ = openrouter.generate(scoring_model, named_body, NAMED_SCORING_SYSTEM)
+                        else:
+                            text, _, _ = ollama.generate(scoring_model, named_body, NAMED_SCORING_SYSTEM)
                         elapsed = time.monotonic() - t0
                         parsed = _extract_scores(text)
                         if parsed:
@@ -347,7 +371,7 @@ def run_scoring(models: list[str]) -> None:
     stats_path = Path(__file__).parent / "results" / "scoring_stats.json"
     stats_path.parent.mkdir(parents=True, exist_ok=True)
     scoring_stats = {}
-    for model in models:
+    for model in scoring_models:
         anon_ok = parse_ok[model]["anon"]
         named_ok = parse_ok[model]["named"]
         anon_fail = parse_fail[model]["anon"]

@@ -9,6 +9,8 @@ dependencies = [
     "rich>=13.7.0",
     "python-frontmatter>=1.1.0",
     "PyYAML>=6.0.2",
+    "python-dotenv>=1.2.1",
+    "markdown-pdf>=1.13.1",
 ]
 
 [build-system]

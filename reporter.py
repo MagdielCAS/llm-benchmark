@@ -43,7 +43,12 @@ import statistics
 from rich.console import Console
 
 import progress as prog
-from config import ALL_PROMPTS, CATEGORIES, FORMAT_CHECKED_PROMPT_IDS
+from config import ALL_PROMPTS, CATEGORIES, FORMAT_CHECKED_PROMPT_IDS, EXPORT_PDF
+
+try:
+    from markdown_pdf import Section, MarkdownPdf
+except ImportError:
+    MarkdownPdf = None
 
 console = Console()
 
@@ -961,5 +966,29 @@ def generate_report(models: list[str]) -> None:
 
     # ── Write file ──
     REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    REPORT_PATH.write_text("".join(lines), encoding="utf-8")
+    report_text = "".join(lines)
+    REPORT_PATH.write_text(report_text, encoding="utf-8")
     console.print(f"[bold green]✓ Report written to:[/bold green] {REPORT_PATH}\n")
+
+    if EXPORT_PDF:
+        if MarkdownPdf is None:
+            console.print("[bold yellow]⚠ EXPORT_PDF is true, but `markdown-pdf` is not installed. Skipping PDF generation.[/bold yellow]")
+        else:
+            pdf_path = REPORT_PATH.with_suffix(".pdf")
+            try:
+                console.print(f"  [dim]Generating PDF at {pdf_path}...[/dim]")
+                pdf = MarkdownPdf(toc_level=2)
+                # markdown_pdf requires adding sections
+                pdf.add_section(Section(report_text, toc=False))
+                pdf.save(str(pdf_path))
+                console.print(f"[bold green]✓ PDF report exported to {pdf_path}[/bold green]")
+            except Exception as e:
+                console.print(f"[bold red]✗ Failed to generate PDF: {e}[/bold red]")
+
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) > 1:
+        generate_report(sys.argv[1:])
+    else:
+        generate_report([])

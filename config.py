@@ -12,10 +12,23 @@ Tuning constants
 * ``USER_PICKS``      – number of prompts shown to the user for manual ranking.
 """
 
+import os
 from dataclasses import dataclass, field
 from typing import List
+from dotenv import load_dotenv
 
-OLLAMA_BASE_URL = "http://localhost:11434"
+# Load environment variables from .env file
+load_dotenv()
+
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+
+# External Scorer configuration
+EXTERNAL_SCORER_ENABLED = os.environ.get("EXTERNAL_SCORER_ENABLED", "false").lower() == "true"
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+EXTERNAL_SCORER_MODEL = os.environ.get("EXTERNAL_SCORER_MODEL", "google/gemini-2.5-pro")
+
+# PDF Export
+EXPORT_PDF = os.environ.get("EXPORT_PDF", "false").lower() == "true"
 
 
 @dataclass
