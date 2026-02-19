@@ -125,27 +125,72 @@ def _pct_rank(value: float, all_values: list[float], higher_is_better: bool = Tr
 # Data loading helpers
 # ---------------------------------------------------------------------------
 
+def _strip_think_tags(text: str) -> str:
+    """Remove ``<think>…</think>`` blocks produced by chain-of-thought models.
+
+    Some models (e.g. OpenThinker, DeepSeek-R1) wrap their internal reasoning
+    in ``<think>`` tags.  These tokens inflate the total count and duration
+    without adding visible value to the user.  Stripping them gives a fairer
+    throughput figure for models that expose their scratchpad.
+    """
+    import re
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+
+
+def _estimate_tokens(text: str) -> int:
+    """Rough token estimate from visible text (words × 1.35, BPE approximation)."""
+    return max(1, round(len(text.split()) * 1.35))
+
+
 def _load_answer_stats(models: list[str]) -> dict[str, dict[str, dict]]:
     """Load token/timing stats from answer files.
 
+    For every answer file two throughput figures are computed:
+
+    * ``tok_per_s`` — raw (includes ``<think>`` tokens from CoT models).
+    * ``visible_tok_per_s`` — after stripping ``<think>…</think>`` blocks.
+
+    The visible figure is used for charts and leaderboards; the raw figure
+    is shown in the per-model appendix for full transparency.
+
     Returns
     -------
-    dict[model][prompt_id] = {"tokens": int, "duration_s": float, "tok_per_s": float}
+    dict[model][prompt_id] = {
+        "tokens": int,           # total tokens (raw, from Ollama)
+        "visible_tokens": int,   # tokens after think-tag removal (estimated)
+        "think_tokens": int,     # difference (CoT scratchpad size)
+        "duration_s": float,
+        "tok_per_s": float,          # raw throughput
+        "visible_tok_per_s": float,  # fair throughput
+        "category": str,
+        "label": str,
+    }
     """
     stats: dict[str, dict[str, dict]] = defaultdict(dict)
     for f in (Path(__file__).parent / "results" / "answers").glob("*.md"):
-        meta, _ = prog._read_frontmatter(f)
+        meta, body = prog._read_frontmatter(f)
         if meta.get("status") != "done":
             continue
         model = meta.get("model", "")
         pid = meta.get("prompt_id", "")
         tokens = float(meta.get("tokens") or 0)
         duration = float(meta.get("duration_s") or 0)
+
+        # Visible-only token estimate after stripping CoT scratchpad
+        visible_body = _strip_think_tags(body)
+        visible_tokens = _estimate_tokens(visible_body) if visible_body else int(tokens)
+        think_tokens = max(0, int(tokens) - visible_tokens)
+
         tok_per_s = round(tokens / duration, 2) if duration > 0 else 0.0
+        visible_tok_per_s = round(visible_tokens / duration, 2) if duration > 0 else 0.0
+
         stats[model][pid] = {
             "tokens": int(tokens),
+            "visible_tokens": visible_tokens,
+            "think_tokens": think_tokens,
             "duration_s": duration,
             "tok_per_s": tok_per_s,
+            "visible_tok_per_s": visible_tok_per_s,
             "category": meta.get("category", ""),
             "label": meta.get("label", ""),
         }
@@ -188,15 +233,23 @@ def generate_report(models: list[str]) -> None:
         pdata = perf.get(model, {})
         durations = [v["duration_s"] for v in pdata.values() if v["duration_s"] > 0]
         tokens_list = [v["tokens"] for v in pdata.values()]
+        visible_tokens_list = [v["visible_tokens"] for v in pdata.values()]
+        think_tokens_list = [v["think_tokens"] for v in pdata.values()]
         tps_list = [v["tok_per_s"] for v in pdata.values() if v["tok_per_s"] > 0]
+        visible_tps_list = [v["visible_tok_per_s"] for v in pdata.values() if v["visible_tok_per_s"] > 0]
         model_perf[model] = {
             "total_tokens": sum(tokens_list),
+            "total_visible_tokens": sum(visible_tokens_list),
+            "total_think_tokens": sum(think_tokens_list),
             "total_duration_s": sum(durations),
             "avg_duration_s": statistics.mean(durations) if durations else 0,
             "median_duration_s": statistics.median(durations) if durations else 0,
             "min_duration_s": min(durations) if durations else 0,
             "max_duration_s": max(durations) if durations else 0,
+            # Raw throughput (includes CoT think tokens)
             "avg_tok_per_s": statistics.mean(tps_list) if tps_list else 0,
+            # Visible throughput (think tags stripped — used for fair rankings)
+            "avg_visible_tok_per_s": statistics.mean(visible_tps_list) if visible_tps_list else 0,
             "median_tok_per_s": statistics.median(tps_list) if tps_list else 0,
             "prompts_answered": len(pdata),
         }
@@ -215,7 +268,7 @@ def generate_report(models: list[str]) -> None:
         avg_anon = sum(anon_vals) / len(anon_vals) if anon_vals else 0.0
         avg_named = sum(named_vals) / len(named_vals) if named_vals else 0.0
         bias = avg_named - avg_anon
-        avg_tps = model_perf[model]["avg_tok_per_s"]
+        avg_tps = model_perf[model]["avg_visible_tok_per_s"]  # visible only (think tags stripped)
         # Efficiency = quality × throughput (higher = better quality per unit time)
         efficiency = round(avg_anon * avg_tps, 2) if avg_tps else 0.0
         leaderboard.append({
@@ -265,7 +318,7 @@ def generate_report(models: list[str]) -> None:
     ]
 
     best_quality = leaderboard[0]["model"] if leaderboard else "—"
-    best_speed_model = max(models, key=lambda m: model_perf[m]["avg_tok_per_s"]) if models else "—"
+    best_speed_model = max(models, key=lambda m: model_perf[m]["avg_visible_tok_per_s"]) if models else "—"
     best_eff_model = max(leaderboard, key=lambda e: e["efficiency"])["model"] if leaderboard else "—"
     best_value_model = min(models, key=lambda m: model_perf[m]["total_tokens"]) if models else "—"
 
@@ -423,20 +476,23 @@ def generate_report(models: list[str]) -> None:
         "> running Ollama locally.  tok/s = tokens generated ÷ wall-clock time.\n\n",
     ]
 
-    # 3a — Summary table
-    tps_all = [model_perf[m]["avg_tok_per_s"] for m in models]
+    # Section 3a — use visible tok/s for ranking, show raw in parens
+    tps_all = [model_perf[m]["avg_visible_tok_per_s"] for m in models]
     dur_all = [model_perf[m]["avg_duration_s"] for m in models]
-    tok_all = [model_perf[m]["total_tokens"] for m in models]
 
     lines += [
         "### 3a — Throughput & Token Summary\n\n",
-        "| Model | Avg response time (s) | Median (s) | Fastest (s) | Slowest (s) | Avg tok/s | Total tokens |\n",
-        "|-------|----------------------|------------|-------------|-------------|-----------|-------------|\n",
+        "> tok/s is computed on **visible tokens only** (<think>…</think> scratchpad stripped)  \n",
+        "> to give a fair comparison across standard and chain-of-thought models.\n\n",
+        "| Model | Avg resp (s) | Median (s) | Min (s) | Max (s) | Visible tok/s | Raw tok/s | Visible tokens | Think tokens | Total tokens |\n",
+        "|-------|-------------|------------|---------|---------|--------------|-----------|---------------|-------------|-------------|\n",
     ]
 
     for model in models:
         p = model_perf[model]
-        tps_flag = _pct_rank(p["avg_tok_per_s"], tps_all)
+        vis_tps = p["avg_visible_tok_per_s"]
+        raw_tps = p["avg_tok_per_s"]
+        tps_flag = _pct_rank(vis_tps, tps_all)
         dur_flag = _pct_rank(p["avg_duration_s"], dur_all, higher_is_better=False)
         lines.append(
             f"| `{model}` "
@@ -444,7 +500,10 @@ def generate_report(models: list[str]) -> None:
             f"| {_fmt(p['median_duration_s'])} "
             f"| {_fmt(p['min_duration_s'])} "
             f"| {_fmt(p['max_duration_s'])} "
-            f"| {_fmt(p['avg_tok_per_s'])}{tps_flag} "
+            f"| {_fmt(vis_tps)}{tps_flag} "
+            f"| {_fmt(raw_tps)} "
+            f"| {p['total_visible_tokens']:,} "
+            f"| {p['total_think_tokens']:,} "
             f"| {p['total_tokens']:,} |\n"
         )
 
@@ -494,9 +553,9 @@ def generate_report(models: list[str]) -> None:
         row_vals_raw = []
         for model in models:
             cat_tps = [
-                perf[model][pid]["tok_per_s"]
+                perf[model][pid]["visible_tok_per_s"]
                 for pid in cat_prompt_map[cat.id]
-                if pid in perf.get(model, {}) and perf[model][pid]["tok_per_s"] > 0
+                if pid in perf.get(model, {}) and perf[model][pid]["visible_tok_per_s"] > 0
             ]
             avg_tps = statistics.mean(cat_tps) if cat_tps else None
             row_vals_raw.append(avg_tps)
@@ -662,8 +721,8 @@ def generate_report(models: list[str]) -> None:
     lines.append(f"| Best overall quality | `{bq}` | Highest avg anonymous score |\n")
 
     # Fastest
-    bf = max(models, key=lambda m: model_perf[m]["avg_tok_per_s"]) if models else "—"
-    bf_tps = model_perf[bf]["avg_tok_per_s"] if models else 0
+    bf = max(models, key=lambda m: model_perf[m]["avg_visible_tok_per_s"]) if models else "—"
+    bf_tps = model_perf[bf]["avg_visible_tok_per_s"] if models else 0
     lines.append(
         f"| Interactive / low-latency use | `{bf}` | {bf_tps:.1f} tok/s avg — fastest response |\n"
     )
@@ -760,6 +819,106 @@ def generate_report(models: list[str]) -> None:
         lines.append("\n")
 
     # ════════════════════════════════════════════════════════════════════════════
+    # SECTION 7c — SCORING RELIABILITY
+    # ════════════════════════════════════════════════════════════════════════════
+    import json as _json
+
+    stats_path = Path(__file__).parent / "results" / "scoring_stats.json"
+    scoring_stats: dict = {}
+    if stats_path.exists():
+        try:
+            scoring_stats = _json.loads(stats_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    # Build coverage map: for each prompt_id, which models have an anon score?
+    # anon_scores[model][pid] is already loaded above.
+    prompt_coverage: dict[str, list[str]] = {}  # pid -> list of models WITH a score
+    for pid in ALL_PROMPTS:
+        prompt_coverage[pid] = [m for m in models if anon_scores[m].get(pid) is not None]
+
+    incomplete_prompts = {pid: ms for pid, ms in prompt_coverage.items() if len(ms) < len(models) and ms}
+
+    lines += [
+        "---\n\n",
+        "## 📊 Section 7c — Scoring Reliability\n\n",
+        "> How well did each model follow the JSON scoring format?  \n",
+        "> A **failed parse** means a scoring call returned output that couldn't be mapped to scores — those prompts are missing from leaderboards.\n\n",
+    ]
+
+    # ── 7c-i: Success rate chart (only if stats file was written this run) ──
+    if scoring_stats:
+        rate_vals = [round(scoring_stats.get(m, {}).get("success_rate", 1.0) * 100, 1) for m in models]
+        lines += [
+            "### Parse Success Rate (%)\n\n",
+            _mermaid_bar(
+                "Scoring JSON Parse Success Rate (%)",
+                models,
+                rate_vals,
+                y_label="%",
+                y_max=100,
+            ),
+            "\n",
+            "| Model | Anon OK | Named OK | Anon Fail | Named Fail | Success Rate |\n",
+            "|-------|---------|----------|-----------|------------|-------------|\n",
+        ]
+        for model in models:
+            st = scoring_stats.get(model, {})
+            rate = st.get("success_rate", 1.0)
+            rate_flag = " 🥇" if rate == 1.0 else (" ⚠️" if rate < 0.9 else "")
+            a_fail = st.get("anon_fail", [])
+            n_fail = st.get("named_fail", [])
+            lines.append(
+                f"| `{model}` "
+                f"| {st.get('anon_ok', '—')} "
+                f"| {st.get('named_ok', '—')} "
+                f"| {len(a_fail)} "
+                f"| {len(n_fail)} "
+                f"| **{rate * 100:.1f}%**{rate_flag} |\n"
+            )
+        lines.append("\n")
+
+        # List failed prompts per model
+        any_fail = any(
+            scoring_stats.get(m, {}).get("anon_fail") or scoring_stats.get(m, {}).get("named_fail")
+            for m in models
+        )
+        if any_fail:
+            lines.append("**Failed prompts by model:**\n\n")
+            for model in models:
+                st = scoring_stats.get(model, {})
+                all_fail = sorted(set(st.get("anon_fail", []) + st.get("named_fail", [])))
+                if all_fail:
+                    lines.append(f"- `{model}`: {', '.join(f'`{p}`' for p in all_fail)}\n")
+            lines.append("\n")
+    else:
+        lines.append("> *Run the benchmark (scoring phase) to populate parse success stats.*\n\n")
+
+    # ── 7c-ii: Prompt coverage table — ⚠ where not all models scored ──
+    lines += [
+        "### Score Coverage per Prompt\n\n",
+        "> ⚠️ = fewer than all models produced a valid score for this prompt.\n\n",
+        "| Category | Prompt | Models scored | Coverage |\n",
+        "|----------|--------|--------------|----------|\n",
+    ]
+    for cat in CATEGORIES:
+        for p_obj in cat.prompts:
+            pid = p_obj.id
+            scored = prompt_coverage.get(pid, [])
+            n = len(scored)
+            total_m = len(models)
+            if n == total_m:
+                cov = f"✅ {n}/{total_m}"
+            elif n == 0:
+                cov = f"❌ 0/{total_m} — no data"
+            else:
+                missing = [m for m in models if m not in scored]
+                cov = f"⚠️ {n}/{total_m} — missing: {', '.join(f'`{m}`' for m in missing)}"
+            lines.append(f"| {cat.name} | {p_obj.label} | {n} | {cov} |\n")
+
+    lines.append("\n")
+
+    # ════════════════════════════════════════════════════════════════════════════
     # SECTION 8 — PER-MODEL APPENDIX
     # ════════════════════════════════════════════════════════════════════════════
     lines += [
@@ -775,7 +934,8 @@ def generate_report(models: list[str]) -> None:
             f"- **Total tokens generated:** {p['total_tokens']:,}  \n",
             f"- **Total inference time:** {p['total_duration_s']:.1f} s ({p['total_duration_s']/60:.1f} min)  \n",
             f"- **Avg response time:** {p['avg_duration_s']:.2f} s  \n",
-            f"- **Avg throughput:** {p['avg_tok_per_s']:.2f} tok/s  \n\n",
+            f"- **Avg throughput (visible):** {p['avg_visible_tok_per_s']:.2f} tok/s  \n",
+            f"- **Avg throughput (raw incl. think):** {p['avg_tok_per_s']:.2f} tok/s  \n\n",
         ]
 
         lines.append("| Category | Prompt | Anon Score | Named Score | Duration (s) | Tokens | tok/s |\n")
@@ -788,7 +948,7 @@ def generate_report(models: list[str]) -> None:
                 pstat = perf.get(model, {}).get(pid, {})
                 dur = pstat.get("duration_s")
                 tok = pstat.get("tokens")
-                tps = pstat.get("tok_per_s")
+                tps = pstat.get("visible_tok_per_s")
                 lines.append(
                     f"| {cat.name} | {p_obj.label} "
                     f"| {anon if anon is not None else '—'} "
